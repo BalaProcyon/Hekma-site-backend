@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Hekma Backend"
     VERSION: str = "0.1.0"
-    DATABASE_URL: str
+    DATABASE_URL: str = ""   # Must be set via environment variable on Render
     APP_ENV: str = "dev"
     
     # News Feed URLs

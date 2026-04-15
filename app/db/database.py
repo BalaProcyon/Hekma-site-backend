@@ -3,14 +3,18 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 
-engine = create_engine(
-    settings.DATABASE_URL, 
-    connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
-)
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-Base = declarative_base()
+if not settings.DATABASE_URL:
+    print("WARNING: DATABASE_URL is not set. Database features will be unavailable.")
+    engine = None
+    SessionLocal = None
+    Base = declarative_base()
+else:
+    engine = create_engine(
+        settings.DATABASE_URL,
+        connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
+    )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base = declarative_base()
 
 # Dependency
 def get_db():
