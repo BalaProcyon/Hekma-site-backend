@@ -1,10 +1,12 @@
 from sqlalchemy import Column, Integer, String, Boolean
-from app.db.database import Base
+from app.db.database import Base, engine
 
-class User(Base):
-    __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    username = Column(String, unique=True, index=True, nullable=False)
-    is_active = Column(Boolean, default=True)
+if engine is not None:
+    class User(Base):
+        __tablename__ = "users"
+
+        id = Column(Integer, primary_key=True, index=True)
+        email = Column(String, unique=True, index=True, nullable=False)
+        username = Column(String, unique=True, index=True, nullable=False)
+        is_active = Column(Boolean, default=True)
