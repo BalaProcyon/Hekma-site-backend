@@ -61,7 +61,7 @@ def parse_date(date_str: str) -> datetime:
 def fetch_who() -> List[NewsItem]:
     try:
         feed = feedparser.parse(settings.WHO_RSS_URL)
-        return [
+        items = [
             NewsItem(
                 id=safe_get(e.get("id"), e.get("link", "")),
                 source="WHO",
@@ -72,6 +72,7 @@ def fetch_who() -> List[NewsItem]:
             )
             for e in feed.entries[:5]
         ]
+        return sorted(items, key=lambda x: x.published, reverse=True)
     except Exception as e:
         print("WHO error:", e)
         return []
@@ -105,7 +106,7 @@ def get_who_by_id(item_id: str) -> Optional[NewsItemDetail]:
 def fetch_nih() -> List[NewsItem]:
     try:
         feed = feedparser.parse(settings.NIH_RSS_URL)
-        return [
+        items = [
             NewsItem(
                 id=safe_get(e.get("id"), e.get("link", "")),
                 source="NIH",
@@ -116,6 +117,7 @@ def fetch_nih() -> List[NewsItem]:
             )
             for e in feed.entries[:5]
         ]
+        return sorted(items, key=lambda x: x.published, reverse=True)
     except Exception as e:
         print("NIH error:", e)
         return []
@@ -154,7 +156,7 @@ def fetch_fda() -> List[NewsItem]:
         if res.status_code != 200:
             return []
         data = res.json()
-        return [
+        items = [
             NewsItem(
                 id=item.get("recall_number", ""),
                 source="FDA",
@@ -166,6 +168,7 @@ def fetch_fda() -> List[NewsItem]:
             )
             for item in data.get("results", [])
         ]
+        return sorted(items, key=lambda x: x.published, reverse=True)
     except Exception as e:
         print("FDA error:", e)
         return []
@@ -277,11 +280,8 @@ def get_aggregated_news() -> NewsAggregatedResponse:
     # news.extend(pubmed)
     # news.extend(google)
 
-    news = sorted(
-        news,
-        key=lambda x: parse_date(x.published),
-        reverse=True
-    )
+    # ISO strings sort correctly as plain strings — no parsing needed
+    news = sorted(news, key=lambda x: x.published, reverse=True)
 
     return NewsAggregatedResponse(count=len(news), data=news)
 
