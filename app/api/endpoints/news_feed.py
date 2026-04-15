@@ -1,7 +1,13 @@
 from fastapi import APIRouter, HTTPException
-from app.schemas.news_feed import NewFeed, NewsItemDetail, NewsAggregatedResponse
+from app.schemas.news_feed import (
+    NewFeed, NewsItemDetail, NewsAggregatedResponse,
+    NewsFeedV2Response, WHONewsV2Response
+)
 from app.schemas.generic import StatusResponse, GenericResponse
-from app.services.news_feed_service import get_aggregated_news, get_news_by_id
+from app.services.news_feed_service import (
+    get_aggregated_news, get_news_by_id,
+    get_news_feed_v2, get_who_news_v2
+)
 import feedparser
 from app.core.config import settings
 
@@ -54,4 +60,22 @@ def get_single_news(source: str, item_id: str):
         )
 
     return result
+
+
+@router.get("/news-feed/live", response_model=NewsFeedV2Response)
+def get_news_feed_live():
+    """
+    Get the live news feed from WHO, FDA, NIH, and CDC (RSS).
+    Matches the frontend /api/news-feed structure.
+    """
+    return get_news_feed_v2()
+
+
+@router.get("/who-news/live", response_model=WHONewsV2Response)
+def get_who_news_live():
+    """
+    Get the live WHO news feed from their JSON API.
+    Matches the frontend /api/who-news structure.
+    """
+    return get_who_news_v2()
 

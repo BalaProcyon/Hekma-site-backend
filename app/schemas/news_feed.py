@@ -41,3 +41,32 @@ class NewsItemDetail(BaseModel):
     status: Optional[str] = None
     classification: Optional[str] = None
     distribution_pattern: Optional[str] = None
+
+
+class ImportedArticle(BaseModel):
+    title: str
+    summary: str
+    url: str
+    date: str
+    externalId: str
+    imageUrl: Optional[str] = None
+    source: str
+    sourceType: str
+    category: str
+    region: List[str]
+    image_emoji: str
+
+
+class NewsFeedV2Response(BaseModel):
+    articles: List[ImportedArticle]
+
+
+class WHOItemV2(BaseModel):
+    title: str
+    date: str
+    url: str
+    type: str
+
+
+class WHONewsV2Response(BaseModel):
+    items: List[WHOItemV2]

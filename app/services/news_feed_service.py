@@ -2,8 +2,13 @@ import feedparser
 import requests
 from datetime import datetime
 from app.core.config import settings
-from app.schemas.news_feed import NewsItem, NewsItemDetail, NewsAggregatedResponse
-from typing import Optional, List
+from app.schemas.news_feed import (
+    NewsItem, NewsItemDetail, NewsAggregatedResponse,
+    ImportedArticle, NewsFeedV2Response, WHOItemV2, WHONewsV2Response
+)
+from typing import Optional, List, Dict, Any
+import re
+import concurrent.futures
 
 
 def safe_get(value, default=""):
@@ -310,3 +315,266 @@ def get_news_by_id(source: str, item_id: str) -> Optional[NewsItemDetail]:
     if handler is None:
         return None
     return handler(item_id)
+
+
+# -----------------------------------------------------------------------------
+# New News Feed Logic (Replicated from Frontend)
+# -----------------------------------------------------------------------------
+
+FEED_CONFIG_V2 = {
+    "WHO": {
+        "fetchUrl": "https://www.who.int/rss-feeds/news-english.xml",
+        "source": "World Health Organization",
+        "sourceType": "WHO",
+        "category": "Global Health",
+        "region": ["Global"],
+        "emoji": "🌍",
+        "format": "rss",
+    },
+    "FDA": {
+        "fetchUrl": "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml",
+        "source": "U.S. Food & Drug Administration",
+        "sourceType": "FDA",
+        "category": "Drug Approval",
+        "region": ["US"],
+        "emoji": "💊",
+        "format": "rss",
+    },
+    "NIH": {
+        "fetchUrl": "https://www.nih.gov/news-releases/feed.xml",
+        "source": "National Institutes of Health",
+        "sourceType": "NIH",
+        "category": "Research Breakthrough",
+        "region": ["US"],
+        "emoji": "🔬",
+        "format": "rss",
+    },
+    "CDC": {
+        "fetchUrl": "https://www.cdc.gov/mmwr/rss/mmwr.xml",
+        "source": "Centers for Disease Control",
+        "sourceType": "CDC",
+        "category": "Public Health",
+        "region": ["US"],
+        "emoji": "📊",
+        "format": "rss",
+    },
+}
+
+
+def extract_tag(xml: str, tag: str) -> str:
+    pattern = rf"<{tag}[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?</{tag}>"
+    match = re.search(pattern, xml, re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def extract_attr(xml: str, tag: str, attr: str) -> Optional[str]:
+    pattern = rf"<{tag}[^>]*\s{attr}=\"([^\"]*)\""
+    match = re.search(pattern, xml, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def parse_pub_date_v2(raw: str) -> str:
+    if not raw:
+        return datetime.now().strftime("%Y-%m-%d")
+
+    # NIH format: "Wed, 04/08/2026 - 17:32"  →  MM/DD/YYYY
+    nih_match = re.search(r"(\d{2})/(\d{2})/(\d{4})", raw)
+    if nih_match:
+        mm, dd, yyyy = nih_match.groups()
+        return f"{yyyy}-{mm}-{dd}"
+
+    try:
+        # Try some common formats
+        for fmt in ["%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z", "%Y-%m-%dT%H:%M:%SZ"]:
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+    except:
+        pass
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def parse_rss_items(xml: str, defaults: Dict[str, Any]) -> List[ImportedArticle]:
+    chunks = re.split(r"<item[\s>]", xml, flags=re.IGNORECASE)[1:]
+    items = []
+    for chunk in chunks:
+        title = extract_tag(chunk, "title")
+        if not title:
+            continue
+        summary = extract_tag(chunk, "description")
+        link = extract_tag(chunk, "link") or extract_attr(chunk, "atom:link", "href") or ""
+        guid = extract_tag(chunk, "guid")
+        pubDate = extract_tag(chunk, "pubDate") or extract_tag(chunk, "dc:date") or extract_tag(chunk, "pubdate")
+        date = parse_pub_date_v2(pubDate)
+        mediaUrl = extract_attr(chunk, "media:content", "url") or extract_attr(chunk, "enclosure", "url")
+        url = link or guid or ""
+        externalId = f"{defaults.get('sourceType')}-{guid or link or title}"[:255]
+
+        items.append(ImportedArticle(
+            title=title,
+            summary=summary,
+            url=url,
+            date=date,
+            externalId=externalId,
+            imageUrl=mediaUrl,
+            source=defaults.get("source", ""),
+            sourceType=defaults.get("sourceType", ""),
+            category=defaults.get("category", "Global Health"),
+            region=defaults.get("region", ["Global"]),
+            image_emoji=defaults.get("image_emoji", "📰")
+        ))
+    return items
+
+
+def fetch_og_image(url: str) -> Optional[str]:
+    if not url or not url.startswith("http"):
+        return None
+    try:
+        headers = {
+            "User-Agent": "HEKMA-NewsBot/1.0",
+            "Accept": "text/html",
+        }
+        res = requests.get(url, headers=headers, timeout=4, stream=True)
+        if res.status_code != 200:
+            return None
+
+        # Read only first 8KB
+        html = ""
+        for chunk in res.iter_content(chunk_size=8192, decode_unicode=True):
+            html += chunk
+            if len(html) >= 8192:
+                break
+        
+        # Try og:image
+        og_match = re.search(r'property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', html, re.I) or \
+                   re.search(r'content=["\']([^"\']+)["\'][^>]*property=["\']og:image["\']', html, re.I)
+        
+        # Fallback: twitter:image
+        tw_match = re.search(r'name=["\']twitter:image["\'][^>]*content=["\']([^"\']+)["\']', html, re.I) or \
+                   re.search(r'content=["\']([^"\']+)["\'][^>]*name=["\']twitter:image["\']', html, re.I)
+        
+        raw_img = og_match.group(1) if og_match else (tw_match.group(1) if tw_match else None)
+        if not raw_img:
+            return None
+
+        if raw_img.startswith("//"):
+            return f"https:{raw_img}"
+        if raw_img.startswith("/"):
+            from urllib.parse import urljoin
+            return urljoin(url, raw_img)
+        return raw_img if raw_img.startswith("http") else None
+    except:
+        return None
+
+
+def fetch_feed_articles_v2(source_name: str) -> List[ImportedArticle]:
+    config = FEED_CONFIG_V2.get(source_name)
+    if not config:
+        return []
+    try:
+        headers = {
+            "Accept": "application/json" if config["format"] == "json" else "application/xml, text/xml, */*",
+            "User-Agent": "HEKMA-NewsBot/1.0",
+        }
+        res = requests.get(config["fetchUrl"], headers=headers, timeout=10)
+        if res.status_code != 200:
+            return []
+
+        if config["format"] == "json":
+            return []
+        else:
+            xml = res.text
+            return parse_rss_items(xml, {
+                "source": config["source"],
+                "sourceType": config["sourceType"],
+                "category": config["category"],
+                "region": config["region"],
+                "image_emoji": config["emoji"],
+            })
+    except:
+        return []
+
+
+def get_news_feed_v2() -> NewsFeedV2Response:
+    sources = ["WHO", "FDA", "NIH", "CDC"]
+    all_articles = []
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_source = {executor.submit(fetch_feed_articles_v2, s): s for s in sources}
+        for future in concurrent.futures.as_completed(future_to_source):
+            try:
+                articles = future.result()
+                all_articles.extend(articles[:15])  # Cap per source
+            except:
+                pass
+
+    # Sort newest first
+    all_articles.sort(key=lambda x: x.date, reverse=True)
+
+    # Enrich top articles with OG images (up to 20)
+    top_limit = 20
+    top_articles = all_articles[:top_limit]
+    remaining_articles = all_articles[top_limit:]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for article in top_articles:
+            if not article.imageUrl:
+                futures.append(executor.submit(lambda a: (a, fetch_og_image(a.url)), article))
+            else:
+                futures.append(None)
+        
+        enriched_top = []
+        for i, future in enumerate(futures):
+            article = top_articles[i]
+            if future:
+                try:
+                    _, img_url = future.result()
+                    if img_url:
+                        article_dict = article.dict()
+                        article_dict['imageUrl'] = img_url
+                        enriched_top.append(ImportedArticle(**article_dict))
+                    else:
+                        enriched_top.append(article)
+                except:
+                    enriched_top.append(article)
+            else:
+                enriched_top.append(article)
+
+    return NewsFeedV2Response(articles=enriched_top + remaining_articles)
+
+
+def get_who_news_v2() -> WHONewsV2Response:
+    try:
+        url = "https://www.who.int/api/news/newsitems?sf_culture=en&$orderby=PublicationDateAndTime%20desc&$top=12"
+        headers = {"Accept": "application/json"}
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code != 200:
+            return WHONewsV2Response(items=[])
+        
+        data = res.json()
+        raw_items = data if isinstance(data, list) else data.get("value", [])
+        
+        items = []
+        for item in raw_items:
+            raw_path = item.get("ItemDefaultUrl", "")
+            if raw_path:
+                if raw_path.startswith("/news"):
+                    full_url = f"https://www.who.int{raw_path}"
+                else:
+                    full_url = f"https://www.who.int/news/item{raw_path}"
+            else:
+                full_url = "https://www.who.int/news"
+            
+            items.append(WHOItemV2(
+                title=item.get("Title", ""),
+                date=item.get("FormatedDate") or item.get("PublicationDateAndTime") or "",
+                url=full_url,
+                type=item.get("NewsType") or "Update"
+            ))
+        return WHONewsV2Response(items=items)
+    except Exception as e:
+        print("WHO news v2 error:", e)
+        return WHONewsV2Response(items=[])
